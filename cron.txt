@@ -1,0 +1,21 @@
+MAILTO=""
+SHELL=/bin/bash
+PATH=/etc:/bin:/sbin:/usr/bin:/usr/sbin:/root/skrypty:/root/scripts/zfs-snapshot-all
+
+#30 18 * * * /root/skrypty/qm-day.sh >>/root/skrypty/cron.log
+#59 6 * * 1-5 /root/skrypty/102.sh >>/root/skrypty/cron.log
+
+37 * * * * /root/scripts/zfs-snapshot-all/snapsend.sh -m automated_hourly_ -z -v 3 rpool/data/vm-106-disk-0,hdd/vm-disks/subvol-101-disk-0,hdd/vm-disks/subvol-101-disk-1,hdd/vm-disks/subvol-107-disk-0,hdd/vm-disks/vm-100-disk-0 2>>/root/scripts/cron.log
+11 0 * * * /root/scripts/zfs-snapshot-all/snapsend.sh -m automated_daily_ -z -v 3 rpool/data/vm-106-disk-0,hdd/vm-disks/subvol-101-disk-0,hdd/vm-disks/subvol-101-disk-1,hdd/vm-disks/subvol-107-disk-0,hdd/vm-disks/vm-100-disk-0 2>>/root/scripts/cron.log
+21 0 * * * /root/scripts/zfs-snapshot-all/snapsend.sh -m automated_daily_ rpool/ROOT/pve-1 2>>/root/scripts/cron.log
+31 0 * * 0 /root/scripts/zfs-snapshot-all/snapsend.sh -m automated_weekly_ -z -v 3 hdd/vm-disks/subvol-101-disk-0,hdd/vm-disks/subvol-101-disk-1,hdd/vm-disks/subvol-107-disk-0,hdd/vm-disks/vm-100-disk-0 2>>/root/scripts/cron.log
+41 0 1 * * /root/scripts/zfs-snapshot-all/snapsend.sh -m automated_monthly_ -z -v 3 hdd/vm-disks/subvol-101-disk-0,hdd/vm-disks/subvol-101-disk-1,hdd/vm-disks/subvol-107-disk-0,hdd/vm-disks/vm-100-disk-0 2>>/root/scripts/cron.log
+51 * * * * /root/scripts/zfs-snapshot-all/delsnaps.sh -R hdd/vm-disks,rpool/data automated_hourly -h24 2>>/root/scripts/cron.log
+53 0 * * * /root/scripts/zfs-snapshot-all/delsnaps.sh -R hdd/vm-disks,rpool/data,rpool/ROOT/pve-1 automated_daily -d7 2>>/root/scripts/cron.log
+55 0 * * 0 /root/scripts/zfs-snapshot-all/delsnaps.sh -R hdd/vm-disks,rpool/data automated_weekly -w4 2>>/root/scripts/cron.log
+57 0 1 * * /root/scripts/zfs-snapshot-all/delsnaps.sh -R hdd/vm-disks,rpool/data automated_monthly -m12 2>>/root/scripts/cron.log
+
+#58 * * * * /root/scripts/zfs-snapshot-all/delsnaps.sh -R hdd/vm-disks zincrsend_zincrsend -d31 2>>/root/scripts/cron.log
+
+
+

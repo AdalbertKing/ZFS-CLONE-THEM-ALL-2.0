@@ -47,13 +47,13 @@
  ```
  
  ### Options
- - `-m <name>`: Prefix for snapshot name (e.g., `automated_`).
- - `-e`       : Enable **external replication** to another node.
+ - `-m <name>`: Prefix for snapshot name (e.g., `automated_hourly`).
+ - `-e`       : Process last snapshot without creating new. Importand in second node in Proxmox Cluster
  - `-z`       : Enable **ZFS send** with compression.
- - `-v <num>` : Verbosity level (1-3, where 3 is the most detailed output).
+ - `-v <num>` : Verbosity level (1-4, where 4 is the most detailed output).
  - `-r`       : Recursive mode, applies to all child datasets, but requires careful handling as child datasets may inherit unwanted snapshots.
  - `-n`       : Dry run, does not perform actual changes, but prints intended actions.
- - `-I`       : Sends only incremental snapshots.
+ - `-I`       : Sends all snapshots between snapshot points, not only last. Important in full mode sent.
  - `-F`       : Forces full synchronization if incremental replication is not possible.
  
  ### Automatic Timestamping and Naming

@@ -23,7 +23,7 @@
  1. **only.snapshot** - Creates a local snapshot without sending it anywhere.
  2. **local.backup** - Creates a local snapshot and sends it to a secondary local dataset for redundancy.
  3. **remote.synchro** - Creates a local snapshot and synchronizes it to a remote server.
- 4. **remote.backup** - Synchronizes existing snapshots from a primary node to a backup node.
+ 4. **remote.backup** - Creates a local snapshot and sends it to a secondary node into remote dataset.
  
  Each mode can be tailored with specific options to enhance backup flexibility and reliability.
  

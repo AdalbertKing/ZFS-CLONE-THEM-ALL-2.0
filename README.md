@@ -51,14 +51,25 @@
  - `-e`       : Enable **external replication** to another node.
  - `-z`       : Enable **ZFS send** with compression.
  - `-v <num>` : Verbosity level (1-3, where 3 is the most detailed output).
- - `-r`       : Recursive mode, applies to all child datasets.
+ - `-r`       : Recursive mode, applies to all child datasets, but requires careful handling as child datasets may inherit unwanted snapshots.
  - `-n`       : Dry run, does not perform actual changes, but prints intended actions.
+ - `-I`       : Sends only incremental snapshots.
+ - `-F`       : Forces full synchronization if incremental replication is not possible.
  
- ### Example
- Backup synchronized snapshots from `pve1` to `pve2`:
- ```bash
- snapsend.sh -m automated_ -e -z -v 3 rpool/data/vm100-disk-0 hdd/backups
+ ### Automatic Timestamping and Naming
+ 
+ SnapSend automatically generates snapshots with a **timestamp** (YYYY-MM-DD_HH-MM-SS) to facilitate easier management.
+ Example snapshot name with default mask:
  ```
+ rpool/data@automated_2025-03-18_12-45-00
+ ```
+ 
+ **Example Usage:**
+ ```bash
+ snapsend.sh -m automated_ -e -I -F -z -v 3 rpool/data hdd/backups
+ ```
+ 
+ This ensures that **incremental snapshots** are sent whenever possible (`-I`), and if they fail, a full backup is forced (`-F`).
  
  ---
  
@@ -109,7 +120,7 @@
  
  **Snapshot Creation & Synchronization**
  ```cron
- 59 * * * * /root/scripts/snapsend.sh -m automated_ -e -z -v 3 rpool/data/vm100-disk-0 hdd/backups 2>>/root/scripts/cron.log
+ 59 * * * * /root/scripts/snapsend.sh -m automated_ -e -I -F -z -v 3 rpool/data/vm100-disk-0 hdd/backups 2>>/root/scripts/cron.log
  ```
  
  **Snapshot Cleanup**
@@ -120,9 +131,11 @@
  ---
  
  ## Summary
- - `snapsend.sh` automates **ZFS snapshot replication**.
+ - `snapsend.sh` automates **ZFS snapshot replication**, ensuring timestamps for proper sorting.
  - `delsnaps.sh` manages **snapshot expiration**.
  - Together with **cron**, they form a complete **snapshot lifecycle system**.
  - The `-n` dry-run mode helps to debug and troubleshoot snapshots before applying changes.
+ - Recursive mode (`-r`) requires special handling to avoid inheriting unwanted child datasets.
+ - The combination of `-I` (incremental) and `-F` (force full) ensures robust backup strategies.
  
  **This setup ensures automated, secure, and efficient snapshot management in a Proxmox Cluster.**

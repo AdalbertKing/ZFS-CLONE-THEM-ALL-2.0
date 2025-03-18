@@ -1,9 +1,9 @@
 #!/bin/bash
-# snapsend.sh v2.4
+# snapsend.sh v2.7
 # ------------------------------------------------------------------------------------------------------------------
 # Author: [Your Name]
-# Date: March, 2025
-# Description: ZFS snapshot manager with advanced conflict detection
+# Date: September 16, 2024
+# Description: ZFS snapshot manager with force full send
 # ------------------------------------------------------------------------------------------------------------------
 
 ###############################################################################
@@ -19,6 +19,9 @@ PORT=22
 USE_EXISTING_SNAPSHOT=0
 RECURSIVE=0
 DRY_RUN=0
+FULL_HISTORY_SEND=0
+UNMOUNT=0
+FORCE_FULL_SEND=0
 declare -a CONFLICT_SNAPSHOTS=()
 ###############################################################################
 #END 1
@@ -50,7 +53,7 @@ get_timestamp() {
     local cmd="zfs get -H -p -o value creation \"${dataset}@${snapshot}\" 2>/dev/null"
     
     if [ -n "$remote_host" ]; then
-        ssh -o StrictHostKeyChecking=no -C -p "$PORT" "$remote_user@$remote_host" "$cmd"
+        ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "$cmd"
     else
         eval "$cmd"
     fi
@@ -72,7 +75,7 @@ get_sorted_snapshots() {
     local cmd="zfs list -H -o name -t snapshot -s creation $depth_option \"$dataset\" 2>/dev/null | awk -F '@' '{print \$2}'"
     
     if [ -n "$remote_host" ]; then
-        local snaps=$(ssh -o StrictHostKeyChecking=no -C -p "$PORT" "$remote_user@$remote_host" "$cmd")
+        local snaps=$(ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "$cmd")
     else
         local snaps=$(eval "$cmd")
     fi
@@ -211,10 +214,15 @@ transfer_data() {
     log 3 "SEND CMD: $send_cmd"
     log 3 "RECV CMD: $recv_cmd"
     
+    if [ $COMPRESSION -eq 1 ]; then
+        send_cmd="$send_cmd | pigz -$COMPRESSION_LEVEL"
+        recv_cmd="pigz -d | $recv_cmd"
+    fi
+    
     if [ -n "$remote_host" ]; then
-        eval "$send_cmd" | ssh -C -p "$PORT" "$remote_user@$remote_host" "eval '$recv_cmd'"
+        eval "$send_cmd" | ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "mbuffer -q -s $BUFFER_SIZE -m $MEMORY | $recv_cmd"
     else
-        eval "$send_cmd | $recv_cmd"
+        eval "$send_cmd | mbuffer -q -s $BUFFER_SIZE -m $MEMORY | $recv_cmd"
     fi
 }
 ###############################################################################
@@ -258,25 +266,51 @@ process_dataset() {
 
     log 2 "Creating target dataset: $tgt_dataset"
     if [ -n "$remote_host" ]; then
-        ssh -o StrictHostKeyChecking=no -C -p "$PORT" "$remote_user@$remote_host" \
+        ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" \
             "zfs list '$tgt_dataset' >/dev/null 2>&1 || zfs create -p '$tgt_dataset'" || return 1
     else
         zfs list "$tgt_dataset" >/dev/null 2>&1 || zfs create -p "$tgt_dataset" || return 1
     fi
 
+    if [ $FORCE_FULL_SEND -eq 1 ]; then
+        log 1 "Force full send activated (-f)"
+        log 2 "Destroying all snapshots and data on target dataset"
+        
+        local destroy_cmd="zfs list -H -o name -r \"$tgt_dataset\" | tac | xargs -I{} sh -c 'zfs destroy -R {} 2>/dev/null || true'"
+        log 4 "RAW ZFS DESTROY COMMAND: $destroy_cmd"  # Nowe logowanie
+        
+        if [ -n "$remote_host" ]; then
+            log 4 "EXECUTING DESTROY ON REMOTE: $remote_host"
+            ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "$destroy_cmd"
+        else
+            log 4 "EXECUTING DESTROY LOCALLY"
+            eval "$destroy_cmd"
+        fi
+
+        log 2 "Recreating target dataset"
+        local create_cmd="zfs create -p \"$tgt_dataset\""
+        log 4 "RAW ZFS CREATE COMMAND: $create_cmd"
+        
+        if [ -n "$remote_host" ]; then
+            ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "$create_cmd"
+        else
+            eval "$create_cmd"
+        fi
+    fi
+
     if [ "$USE_EXISTING_SNAPSHOT" -eq 1 ]; then
         local src_snaps=($(get_sorted_snapshots "$src_dataset")) || return 1
-        [ ${#src_snaps[@]} -eq 0 ] && {
+        if [ ${#src_snaps[@]} -eq 0 ]; then
             log 0 "No source snapshots found"
             return 1
-        }
+        fi
         
         if [ -n "$MESSAGE" ]; then
             src_snaps=($(printf "%s\n" "${src_snaps[@]}" | grep "^$MESSAGE"))
-            [ ${#src_snaps[@]} -eq 0 ] && {
+            if [ ${#src_snaps[@]} -eq 0 ]; then
                 log 0 "No source snapshots matching message: $MESSAGE"
                 return 1
-            }
+            fi
         fi
         
         local latest_snap="${src_snaps[-1]}"
@@ -294,65 +328,46 @@ process_dataset() {
         log 3 "  ${tgt_dataset}@${snap}"
     done
 
-    if [[ " ${tgt_snaps[@]} " =~ " ${latest_snap} " ]]; then
-        if validate_snapshot "$src_dataset" "$tgt_dataset" "$latest_snap" "$remote_user" "$remote_host"; then
-            log 1 "Snapshot already exists in target - skipping"
-            return 0
-        else
-            log 1 "Snapshot exists but timestamps differ - forcing full send"
-            local common_snapshot="null"
-        fi
+    if [ $FORCE_FULL_SEND -eq 1 ]; then
+        log 1 "Force full send activated (-f)"
+        local common_snapshot="null"
     else
-        local common_snapshot=$(find_common_snapshot "$src_dataset" "$tgt_dataset" "$remote_user" "$remote_host")
+        if [[ " ${tgt_snaps[@]} " =~ " ${latest_snap} " ]]; then
+            if validate_snapshot "$src_dataset" "$tgt_dataset" "$latest_snap" "$remote_user" "$remote_host"; then
+                log 1 "Snapshot already exists in target - skipping"
+                return 0
+            else
+                log 1 "Snapshot exists but timestamps differ - forcing full send"
+                local common_snapshot="null"
+            fi
+        else
+            local common_snapshot=$(find_common_snapshot "$src_dataset" "$tgt_dataset" "$remote_user" "$remote_host")
+        fi
     fi
 
     local send_cmd
     local recursive_send_flag=""
     [ $RECURSIVE -eq 1 ] && recursive_send_flag="-R"
-    
-    if [ "$common_snapshot" != "null" ]; then
+
+    if [[ "$common_snapshot" != "null" ]]; then
         log 1 "Found valid common snapshot: ${src_dataset}@${common_snapshot}"
-
-        if [ $RECURSIVE -eq 1 ]; then
-            log 2 "Verifying child datasets..."
-            local children
-            if [ -n "$remote_host" ]; then
-                children=$(ssh -p "$PORT" "$remote_user@$remote_host" "zfs list -H -o name -r \"$tgt_dataset\" | grep -v \"^${tgt_dataset}$\"")
-            else
-                children=$(zfs list -H -o name -r "$tgt_dataset" | grep -v "^${tgt_dataset}$")
-            fi
-
-            for child in $children; do
-                local child_name="${child##*/}"
-                local src_child="${src_dataset}/${child_name}"
-                local tgt_child="$child"
-                
-                if ! zfs list -H "$src_child" &>/dev/null; then
-                    log 0 "Source child dataset not found: $src_child"
-                    return 1
-                fi
-
-                local child_common=$(find_common_snapshot "$src_child" "$tgt_child" "$remote_user" "$remote_host")
-                if [ "$child_common" != "$common_snapshot" ]; then
-                    log 0 "Child dataset $tgt_child has inconsistent common snapshot: $child_common (expected: $common_snapshot)"
-                    return 1
-                fi
-            done
+        send_cmd="zfs send $recursive_send_flag -I ${src_dataset}@${common_snapshot} $snapshot"
+    else
+        if [ $FULL_HISTORY_SEND -eq 1 ]; then
+            log 1 "Performing full history send"
+            send_cmd="zfs send $recursive_send_flag -R $snapshot"
+        else
+            log 1 "Performing standard full send"
+            send_cmd="zfs send $recursive_send_flag $snapshot"
         fi
-
-        send_cmd="zfs send $recursive_send_flag -c -I ${src_dataset}@${common_snapshot} $snapshot"
-    else
-        log 1 "Performing full send"
-        send_cmd="zfs send $recursive_send_flag -c $snapshot"
     fi
 
-    local pipe_extra="mbuffer -q -s $BUFFER_SIZE -m $MEMORY"
-    if [ "$COMPRESSION" -eq 1 ]; then
-        send_cmd+=" | pigz -$COMPRESSION_LEVEL"
-        recv_cmd="pigz -d | $pipe_extra | zfs recv -F $tgt_dataset"
-    else
-        recv_cmd="$pipe_extra | zfs recv -F $tgt_dataset"
-    fi
+    local recv_flags="-F"
+    [ $UNMOUNT -eq 1 ] && recv_flags="$recv_flags -u"
+    local recv_cmd="zfs recv $recv_flags $tgt_dataset"
+    
+    log 4 "RAW ZFS SEND COMMAND: $send_cmd"
+    log 4 "RAW ZFS RECV COMMAND: $recv_cmd"
 
     log 1 "Starting transfer..."
     transfer_data "$send_cmd" "$recv_cmd" "$remote_host" "$remote_user" || {
@@ -372,7 +387,7 @@ process_dataset() {
 ###############################################################################
 #BEGIN 5A [ARGUMENT PARSING]
 ###############################################################################
-while getopts "m:ezl:v:rn" opt; do
+while getopts "m:ezl:v:rnIuf" opt; do
     case $opt in
         m) MESSAGE="$OPTARG";;
         e) USE_EXISTING_SNAPSHOT=1;;
@@ -381,9 +396,12 @@ while getopts "m:ezl:v:rn" opt; do
         v) VERBOSE="$OPTARG";;
         r) RECURSIVE=1;;
         n) DRY_RUN=1;;
+        I) FULL_HISTORY_SEND=1;;
+        u) UNMOUNT=1;;
+        f) FORCE_FULL_SEND=1;;
         *) 
             echo "B³¹d: Nieznana opcja -$OPTARG" >&2
-            echo "Dozwolone opcje: -m -e -z -l -v -r -n" >&2
+            echo "Dozwolone opcje: -m -e -z -l -v -r -n -I -u -f" >&2
             exit 1
             ;;
     esac

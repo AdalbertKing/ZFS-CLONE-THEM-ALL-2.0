@@ -8,7 +8,7 @@
  ---
  
  ## Overview
- **SnapSend (`snapsend.sh`)** automates the creation and synchronization of **ZFS snapshots** between hosts in a **Proxmox Cluster**.
+ **SnapSend (`snapsend.sh`)** automates the creation and synchronization of **ZFS snapshots** between hosts ex.: in a **Proxmox Cluster**.
  
  **DelSnap (`delsnaps.sh`)** manages the cleanup of outdated snapshots based on predefined time retention policies.
  
@@ -33,8 +33,8 @@
  
  - Two nodes: `pve1` and `pve2`.
  - `pve1` stores VM datasets.
- - `pve2` serves as a **backup node** with an **HDD storage** (`hdd/backups`).
- - `snapsend.sh` synchronizes **snapshots** from `pve1` to `pve2`.
+ - `pve2` additionaly serves as a **backup node** with an **HDD storage** (`hdd/backups`).
+ - `snapsend.sh` backups **snapshots** synchronized between `pve1` nad `pve2` by corosync into backup dataset on pve2.
  - `delsnaps.sh` ensures old snapshots are automatically **pruned**.
  
  ---

@@ -1,11 +1,30 @@
 #!/bin/bash
-# snapsend.sh v2.8
-# ------------------------------------------------------------------------------------------------------------------
+set -o pipefail
+# snapsend.sh v2.9 (Refactored)
+# ------------------------------------------------------------------------------
 # Author: [Your Name]
-# Date: September 16, 2024
+# Refactored: April 04, 2025
 # Description: ZFS snapshot manager with force full send
-# ------------------------------------------------------------------------------------------------------------------
-
+#
+# Usage: snapsend.sh [options] DATASETS [REMOTE]
+# Options:
+#   -m <MESSAGE>      Use MESSAGE as prefix for snapshot name (to label snapshots)
+#   -e               Use existing latest snapshot instead of creating a new one
+#   -z               Compress data stream with pigz during transfer
+#   -l <LEVEL>        Compression level for pigz (default: 6)
+#   -v <LEVEL>        Verbosity level for logging (0=errors only, up to 4=debug)
+#   -r               Recursive mode (include child datasets in send/recv)
+#   -n               Dry-run mode (show conflicting snapshots without sending)
+#   -I               Full history send (send all snapshots if no common base)
+#   -u               Unmount target filesystem(s) after receive
+#   -f               Force full send (destroy target data and send full snapshot)
+#
+# REMOTE format: [user@]host:dataset_path  (for remote replication).
+# If REMOTE is omitted or has no ':', the backup is done locally to the target path.
+#
+# Examples:
+#   snapsend.sh -v1 pool/data backuppool/data_backup
+#   snapsend.sh -r pool/data user@backuphost:tank/backups/data
 ###############################################################################
 #BEGIN 1 [GLOBAL CONFIGURATION]
 ###############################################################################
@@ -50,13 +69,13 @@ get_timestamp() {
     local remote_user="${3:-}"
     local remote_host="${4:-}"
     
-    local cmd="zfs get -H -p -o value creation \"${dataset}@${snapshot}\" 2>/dev/null"
-    
     if [ -n "$remote_host" ]; then
-        ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "$cmd"
+        local ts=$(ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" \
+            "zfs get -H -p -o value creation '${dataset}@${snapshot}' 2>/dev/null") || return 1
     else
-        eval "$cmd"
+        local ts=$(zfs get -H -p -o value creation "${dataset}@${snapshot}" 2>/dev/null) || return 1
     fi
+    echo "$ts"
 }
 ###############################################################################
 #END 2B
@@ -72,14 +91,13 @@ get_sorted_snapshots() {
     local depth_option="-d 1"
     [ $RECURSIVE -eq 1 ] && depth_option=""
     
-    local cmd="zfs list -H -o name -t snapshot -s creation $depth_option \"$dataset\" 2>/dev/null | awk -F '@' '{print \$2}'"
-    
+    local snaps
     if [ -n "$remote_host" ]; then
-        local snaps=$(ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "$cmd")
+        snaps=$(ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" \
+            "zfs list -H -o name -t snapshot -s creation $depth_option '$dataset' 2>/dev/null | awk -F '@' '{print \$2}'") || return 1
     else
-        local snaps=$(eval "$cmd")
+        snaps=$(zfs list -H -o name -t snapshot -s creation $depth_option "$dataset" 2>/dev/null | awk -F '@' '{print $2}') || return 1
     fi
-
     echo "$snaps"
 }
 ###############################################################################
@@ -99,7 +117,7 @@ find_conflicting_snapshots() {
     local tgt_snaps=($(get_sorted_snapshots "$tgt_dataset" "$remote_user" "$remote_host"))
 
     for tgt_snap in "${tgt_snaps[@]}"; do
-        if [[ ! " ${src_snaps[@]} " =~ " ${tgt_snap} " ]] || ! validate_snapshot "$src_dataset" "$tgt_dataset" "$tgt_snap" "$remote_user" "$remote_host"; then
+        if [[ ! " ${src_snaps[*]} " == *" ${tgt_snap} "* ]] || ! validate_snapshot "$src_dataset" "$tgt_dataset" "$tgt_snap" "$remote_user" "$remote_host"; then
             CONFLICT_SNAPSHOTS+=("${tgt_dataset}@${tgt_snap}")
         fi
     done
@@ -135,7 +153,6 @@ find_conflicting_snapshots() {
 ###############################################################################
 #END 2D
 ###############################################################################
-
 ###############################################################################
 #BEGIN 2F [HOST VALIDATION]
 ###############################################################################
@@ -178,7 +195,6 @@ validate_remote_host() {
 ###############################################################################
 #END 2F
 
-
 #END 2
 
 ###############################################################################
@@ -198,6 +214,9 @@ validate_snapshot() {
     local src_ts=$(get_timestamp "$src_dataset" "$snapshot")
     local tgt_ts=$(get_timestamp "$tgt_dataset" "$snapshot" "$remote_user" "$remote_host")
     
+    if [ -z "$src_ts" ] || [ -z "$tgt_ts" ]; then
+        return 1
+    fi
     [ "$src_ts" -eq "$tgt_ts" ] && return 0 || return 1
 }
 ###############################################################################
@@ -258,15 +277,31 @@ transfer_data() {
     log 3 "SEND CMD: $send_cmd"
     log 3 "RECV CMD: $recv_cmd"
     
-    if [ $COMPRESSION -eq 1 ]; then
-        send_cmd="$send_cmd | pigz -$COMPRESSION_LEVEL"
-        recv_cmd="pigz -d | $recv_cmd"
-    fi
+    local send_args
+    local recv_args
+    IFS=' ' read -r -a send_args <<< "$send_cmd"
+    IFS=' ' read -r -a recv_args <<< "$recv_cmd"
     
     if [ -n "$remote_host" ]; then
-        eval "$send_cmd" | ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "mbuffer -q -s $BUFFER_SIZE -m $MEMORY | $recv_cmd"
+        if [ $COMPRESSION -eq 1 ]; then
+            if ! "${send_args[@]}" | pigz -$COMPRESSION_LEVEL | ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "mbuffer -q -s $BUFFER_SIZE -m $MEMORY | pigz -d | $recv_cmd"; then
+                return 1
+            fi
+        else
+            if ! "${send_args[@]}" | ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "mbuffer -q -s $BUFFER_SIZE -m $MEMORY | $recv_cmd"; then
+                return 1
+            fi
+        fi
     else
-        eval "$send_cmd | mbuffer -q -s $BUFFER_SIZE -m $MEMORY | $recv_cmd"
+        if [ $COMPRESSION -eq 1 ]; then
+            if ! "${send_args[@]}" | pigz -$COMPRESSION_LEVEL | mbuffer -q -s $BUFFER_SIZE -m $MEMORY | pigz -d | "${recv_args[@]}"; then
+                return 1
+            fi
+        else
+            if ! "${send_args[@]}" | mbuffer -q -s $BUFFER_SIZE -m $MEMORY | "${recv_args[@]}"; then
+                return 1
+            fi
+        fi
     fi
 }
 ###############################################################################
@@ -308,12 +343,14 @@ process_dataset() {
         return 1
     fi
 
-    log 2 "Creating target dataset: $tgt_dataset"
-    if [ -n "$remote_host" ]; then
-        ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" \
-            "zfs list '$tgt_dataset' >/dev/null 2>&1 || zfs create -p '$tgt_dataset'" || return 1
-    else
-        zfs list "$tgt_dataset" >/dev/null 2>&1 || zfs create -p "$tgt_dataset" || return 1
+    if [ $FORCE_FULL_SEND -ne 1 ]; then
+        log 2 "Creating target dataset: $tgt_dataset"
+        if [ -n "$remote_host" ]; then
+            ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" \
+                "zfs list '$tgt_dataset' >/dev/null 2>&1 || zfs create -p '$tgt_dataset'" || return 1
+        else
+            zfs list "$tgt_dataset" >/dev/null 2>&1 || zfs create -p "$tgt_dataset" || return 1
+        fi
     fi
 
     if [ $FORCE_FULL_SEND -eq 1 ]; then
@@ -321,14 +358,14 @@ process_dataset() {
         log 2 "Destroying all snapshots and data on target dataset"
         
         local destroy_cmd="zfs list -H -o name -r \"$tgt_dataset\" | tac | xargs -I{} sh -c 'zfs destroy -R {} 2>/dev/null || true'"
-        log 4 "RAW ZFS DESTROY COMMAND: $destroy_cmd"  # Nowe logowanie
+        log 4 "RAW ZFS DESTROY COMMAND: $destroy_cmd"  # debug logging
         
         if [ -n "$remote_host" ]; then
             log 4 "EXECUTING DESTROY ON REMOTE: $remote_host"
             ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "$destroy_cmd"
         else
             log 4 "EXECUTING DESTROY LOCALLY"
-            eval "$destroy_cmd"
+            zfs list -H -o name -r "$tgt_dataset" 2>/dev/null | tac | xargs -I{} sh -c 'zfs destroy -R "$@" 2>/dev/null || true' -- {} || true
         fi
 
         log 2 "Recreating target dataset"
@@ -336,9 +373,9 @@ process_dataset() {
         log 4 "RAW ZFS CREATE COMMAND: $create_cmd"
         
         if [ -n "$remote_host" ]; then
-            ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "$create_cmd"
+            ssh -o StrictHostKeyChecking=no -p "$PORT" "$remote_user@$remote_host" "$create_cmd" || return 1
         else
-            eval "$create_cmd"
+            zfs create -p "$tgt_dataset" || return 1
         fi
     fi
 
@@ -456,6 +493,18 @@ shift $((OPTIND-1))
 ###############################################################################
 #END 5A
 
+# Verify required commands are available
+if [ $COMPRESSION -eq 1 ] && ! command -v pigz >/dev/null; then
+    log 0 "Compression requested but pigz is not installed."
+    exit 1
+fi
+if ! command -v mbuffer >/dev/null; then
+    log 0 "Required command 'mbuffer' not found. Install mbuffer to proceed."
+    exit 1
+fi
+
+command -v zfs >/dev/null || { echo "Error: zfs command not found." >&2; exit 1; }
+
 ###############################################################################
 #BEGIN 5B [MAIN LOGIC]
 ###############################################################################
@@ -491,7 +540,7 @@ for dataset in "${DATASETS[@]}"; do
         tgt_path="$dataset"
     fi
     tgt_path=$(echo "$tgt_path" | sed 's:///*:/:g; s:^/::')
-
+    
     log 1 "Processing: $dataset => ${REMOTE_HOST:-local}:$tgt_path"
     
     if [ $DRY_RUN -eq 1 ]; then

@@ -3,7 +3,7 @@
  ## Author
  **Wojciech Król** (lurk@lurk.com.pl) with contributions from **DeepSeek R1** and **ChatGPT**
  
- **Script Version: 2.7**
+ **Script Version: 2.9**
  
  ---
  
@@ -50,11 +50,13 @@
  - `-m <name>`: Prefix for snapshot name (e.g., `automated_hourly`).
  - `-e`       : Process last snapshot without creating new. Important, when second node is in Proxmox Cluster
  - `-z`       : Enable **ZFS send** with compression.
+ -  `l <num>` : Compression level
  - `-v <num>` : Verbosity level (1-4, where 4 is the most detailed output).
  - `-r`       : Recursive mode, applies to all child datasets, but requires careful handling as child datasets may inherit unwanted snapshots.
  - `-n`       : Dry run, does not perform actual changes, but prints intended actions.
  - `-I`       : Sends all snapshots between snapshot points, not only last. Important in full mode sent.
- - `-F`       : Forces full synchronization by **destroying existing target snapshots** before transfer.
+ - `-f`       : Forces full synchronization by **destroying existing target snapshots** before transfer.
+ - `-u`		  : Force unmounted datasets on target
 
  ### Automatic Timestamping and Naming
  
